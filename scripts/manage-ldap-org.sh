@@ -102,7 +102,7 @@ entry_exists() {
 }
 
 status_schema_defined() {
-  docker exec "${LDAP_CONTAINER}" ldapsearch -Y EXTERNAL -H ldapi:/// -LLL -b cn=schema,cn=config "(olcAttributeTypes=*status*)" olcAttributeTypes >/dev/null 2>&1
+  docker exec "${LDAP_CONTAINER}" ldapsearch -Y EXTERNAL -H ldapi:/// -LLL -b cn=schema,cn=config "(olcObjectClasses=librechatStatusAux)" olcObjectClasses | grep -q librechatStatusAux >/dev/null 2>&1
 }
 
 add_status_schema() {

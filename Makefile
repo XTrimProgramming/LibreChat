@@ -198,7 +198,6 @@ up:
 	@echo "🤖 Pulling Ollama models (this may take a few minutes)..."
 	@sleep 5
 	@$(MAKE) ollama-models || echo "⚠️  Warning: Ollama models pull failed. You can manually pull them with 'make ollama-models'"
-	@$(MAKE) seed-guardrails || echo "⚠️  Guardrail seeding failed; rerun './scripts/manage-ldap-org.sh apply-template --file scripts/templates/org-template.json'"
 	@echo ""
 	@echo "🌐 Access LibreChat at: http://localhost:3080"
 	@echo "📊 Access MCP ClickHouse at: http://localhost:8001"
@@ -236,7 +235,6 @@ rebuild:
 	@echo "🤖 Pulling Ollama models (this may take a few minutes)..."
 	@sleep 5
 	@$(MAKE) ollama-models || echo "⚠️  Warning: Ollama models pull failed. You can manually pull them with 'make ollama-models'"
-	@$(MAKE) seed-guardrails || echo "⚠️  Guardrail seeding failed; rerun './scripts/manage-ldap-org.sh apply-template --file scripts/templates/org-template.json'"
 	@echo ""
 	@echo "🌐 Access LibreChat at: http://localhost:3080"
 	@echo "📊 Access MCP ClickHouse at: http://localhost:8001"
