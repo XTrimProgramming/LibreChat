@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+MANAGE_SCRIPT_PATH="${SCRIPT_DIR}/manage-ldap-org.sh"
 
 load_env_value() {
   local key=$1
@@ -105,17 +107,11 @@ require_container() {
 list_users() {
 	require_container
 	local entries
-  entries=$(docker exec "${LDAP_CONTAINER}" ldapsearch -x -LLL -D "${LDAP_BIND_DN}" -w "${BIND_PWD}" -b "${USERS_BASE}" "(objectClass=inetOrgPerson)" dn uid givenName sn o 2>/dev/null || true)
-  if [ -z "$entries" ]; then
-    echo "No LDAP users found (ensure the LDAP container is running)."
-    echo "Seeding default user ${LDAP_DEFAULT_USER}..."
-    seed_default_user
-    entries=$(docker exec "${LDAP_CONTAINER}" ldapsearch -x -LLL -D "${LDAP_BIND_DN}" -w "${BIND_PWD}" -b "${USERS_BASE}" "(objectClass=inetOrgPerson)" dn uid givenName sn o 2>/dev/null || true)
-    if [ -z "$entries" ]; then
-      echo "Unable to list users even after seeding."
-      return
-    fi
-  fi
+	entries=$(docker exec "${LDAP_CONTAINER}" ldapsearch -x -LLL -D "${LDAP_BIND_DN}" -w "${BIND_PWD}" -b "${USERS_BASE}" "(objectClass=inetOrgPerson)" dn uid givenName sn o 2>/dev/null || true)
+	if [ -z "$entries" ]; then
+		echo "No LDAP users found (ensure the LDAP container is running)."
+		return
+	fi
 	echo "LDAP users under ${USERS_BASE}:"
 	printf '%s' "$entries" | awk '
     function row() {
@@ -169,6 +165,63 @@ user_dn() {
   printf 'uid=%s,%s' "$username" "$USERS_BASE"
 }
 
+org_label() {
+  local org=$1
+  if [[ $org == ou=* ]]; then
+    printf '%s' "${org#ou=}"
+  else
+    printf '%s' "$org"
+  fi
+}
+
+org_dn() {
+  local org=$1
+  if [[ $org == ou=* ]]; then
+    printf '%s,%s' "$org" "$LDAP_BASE"
+  else
+    printf 'ou=%s,%s' "$org" "$LDAP_BASE"
+  fi
+}
+
+group_name_from_dn() {
+  local dn=$1
+  local first=${dn%%,*}
+  printf '%s' "${first#cn=}"
+}
+
+ensure_org_exists() {
+  local org=$1
+  local dn
+  dn=$(org_dn "$org")
+  if entry_exists "$dn"; then
+    return
+  fi
+  local label
+  label=$(org_label "$org")
+  cat <<EOF >&2
+Organization ${label} not found. Create it first:
+  ${MANAGE_SCRIPT_PATH} create-org --name "${label}"
+EOF
+  exit 1
+}
+
+ensure_group_exists() {
+  local group=$1
+  local org=$2
+  local dn
+  dn=$(group_dn "$group")
+  if entry_exists "$dn"; then
+    return
+  fi
+  local org_label_value
+  org_label_value=$(org_label "$org")
+  cat <<EOF >&2
+Group ${group} not found. Create it first:
+  ${MANAGE_SCRIPT_PATH} create-group --name "${group}" --org "${org_label_value}"
+EOF
+  exit 1
+}
+
 group_has_member() {
   local group_dn=$1
   local member_dn=$2
@@ -183,7 +236,12 @@ add_member_to_group() {
     return 1
   fi
   if ! entry_exists "$group_dn"; then
-    echo "Group ${group_dn} does not exist. Create it with --name before adding members." >&2
+    local label
+    label=$(group_name_from_dn "$group_dn")
+    cat <<EOF >&2
+Group ${label} not found. Create it first:
+  ${MANAGE_SCRIPT_PATH} create-group --name "${label}"
+EOF
     return 1
   fi
   if group_has_member "$group_dn" "$member_dn"; then
@@ -297,133 +355,6 @@ EOF
   fi
 }
 
-ensure_group_exists() {
-  local group=$1
-  local org=${2:-$LDAP_ORGANISATION}
-  ensure_ou "$GROUPS_BASE" "$(ou_label "$LDAP_GROUPS_OU")"
-  local dn
-  dn=$(group_dn "$group")
-  if entry_exists "$dn"; then
-    return
-  fi
-  docker exec -i "${LDAP_CONTAINER}" ldapadd -c -x -D "${LDAP_BIND_DN}" -w "${BIND_PWD}" <<EOF
-dn: ${dn}
-objectClass: top
-objectClass: groupOfNames
-cn: ${group}
-description: org=${org}
-member: ${LDAP_BIND_DN}
-EOF
-  echo "Created group ${group}"
-}
-
-handle_group_command() {
-  local group_name=""
-  local services=""
-  local members=""
-  local org_override=""
-  while [ $# -gt 0 ]; do
-    case $1 in
-      --name)
-        group_name=$2
-        shift 2
-        ;;
-      --services)
-        services=$2
-        shift 2
-        ;;
-      --members)
-        members=$2
-        shift 2
-        ;;
-      --org|--organisation)
-        org_override=$2
-        shift 2
-        ;;
-      --help|-h|help)
-        show_help
-        exit 0
-        ;;
-      *)
-        echo "Unknown option $1" >&2
-        show_help
-        exit 1
-        ;;
-    esac
-  done
-  if [ -z "$group_name" ]; then
-    echo "--name is required when creating a group." >&2
-    exit 1
-  fi
-  ensure_ou "$GROUPS_BASE" "$(ou_label "$LDAP_GROUPS_OU")"
-  create_or_update_group "$group_name" "$services" "$members" "${org_override:-$LDAP_ORGANISATION}"
-}
-
-handle_user_command() {
-  local username=""
-  local firstname=""
-  local lastname=""
-  local email=""
-  local password=""
-  local groups=""
-  local org_override=""
-  while [ $# -gt 0 ]; do
-    case $1 in
-      --username)
-        username=$2
-        shift 2
-        ;;
-      --firstname)
-        firstname=$2
-        shift 2
-        ;;
-      --lastname)
-        lastname=$2
-        shift 2
-        ;;
-      --email)
-        email=$2
-        shift 2
-        ;;
-      --password)
-        password=$2
-        shift 2
-        ;;
-      --groups)
-        groups=$2
-        shift 2
-        ;;
-      --org|--organisation)
-        org_override=$2
-        shift 2
-        ;;
-      --help|-h|help)
-        show_help
-        exit 0
-        ;;
-      *)
-        echo "Unknown option $1" >&2
-        show_help
-        exit 1
-        ;;
-    esac
-  done
-  if [ -z "$username" ]; then
-    echo "--username is required for the user command." >&2
-    exit 1
-  fi
-  if [ -z "$password" ]; then
-    echo "--password is required for the user command." >&2
-    exit 1
-  fi
-  if [ -z "$email" ]; then
-    email="${username}@${LDAP_DOMAIN}"
-  fi
-    firstname=${firstname:-$username}
-    lastname=${lastname:-$username}
-  create_or_update_user "$username" "$firstname" "$lastname" "$email" "$password" "$groups" "${org_override:-$LDAP_ORGANISATION}"
-}
-
 create_or_update_user() {
   local username=$1
   local given_name=$2
@@ -432,16 +363,22 @@ create_or_update_user() {
   local password=$5
   local groups=$6
   local org=${7:-$LDAP_ORGANISATION}
+  require_container
+  ensure_org_exists "$org"
   ensure_ou "$USERS_BASE" "$(ou_label "$LDAP_USERS_OU")"
+  if [ -z "$given_name" ]; then
+    given_name="$username"
+  fi
+  if [ -z "$sn" ]; then
+    sn="$username"
+  fi
   local cn_value
   if [ -n "$given_name" ] && [ -n "$sn" ]; then
     cn_value="${given_name} ${sn}"
   elif [ -n "$given_name" ]; then
     cn_value="$given_name"
-  elif [ -n "$sn" ]; then
-    cn_value="$sn"
   else
-    cn_value="$username"
+    cn_value="$sn"
   fi
   local dn
   dn=$(user_dn "$username")
@@ -485,11 +422,24 @@ o: ${org}
 EOF
     echo "Created LDAP user ${username}"
   fi
-  if [ -n "$groups" ]; then
-    while IFS= read -r group; do
-      ensure_group_exists "$group" "${org}" || continue
+  local normalized_groups
+  normalized_groups=$(trim "$groups")
+  if [ -z "$normalized_groups" ]; then
+    normalized_groups="users"
+  elif ! [[ ",${normalized_groups}," == *",users,"* ]]; then
+    normalized_groups="users,${normalized_groups}"
+  fi
+  local group_list=()
+  while IFS= read -r group; do
+    group_list+=("$group")
+  done < <(split_list "$normalized_groups")
+  for group in "${group_list[@]}"; do
+    ensure_group_exists "$group" "$org"
+  done
+  if [ "${#group_list[@]}" -gt 0 ]; then
+    for group in "${group_list[@]}"; do
       add_member_to_group "$dn" "$(group_dn "$group")"
-    done < <(split_list "$groups")
+    done
   fi
 }
 
@@ -568,14 +518,105 @@ case "$command" in
     list_users
     exit 0
     ;;
-  group)
-    require_container
-    handle_group_command "$@"
+  user)
+    username=""
+    firstname=""
+    lastname=""
+    email=""
+    password=""
+    groups=""
+    org_override=""
+    while [ $# -gt 0 ]; do
+      case $1 in
+        --username)
+          username=$2
+          shift 2
+          ;;
+        --firstname)
+          firstname=$2
+          shift 2
+          ;;
+        --lastname)
+          lastname=$2
+          shift 2
+          ;;
+        --email)
+          email=$2
+          shift 2
+          ;;
+        --password)
+          password=$2
+          shift 2
+          ;;
+        --groups)
+          groups=$2
+          shift 2
+          ;;
+        --org|--organisation)
+          org_override=$2
+          shift 2
+          ;;
+        --help|-h|help)
+          show_help
+          exit 0
+          ;;
+        *)
+          echo "Unknown option $1" >&2
+          show_help
+          exit 1
+          ;;
+      esac
+    done
+    if [ -z "$username" ]; then
+      echo "--username is required when creating a user." >&2
+      exit 1
+    fi
+    email=${email:-"${username}@${LDAP_DOMAIN}"}
+    password=${password:-$LDAP_DEFAULT_PASSWORD}
+    create_or_update_user "$username" "$firstname" "$lastname" "$email" "$password" "$groups" "${org_override:-$LDAP_ORGANISATION}"
     exit 0
     ;;
-  user)
+  group)
     require_container
-    handle_user_command "$@"
+    local group_name=""
+    local services=""
+    local members=""
+    local org_override=""
+    while [ $# -gt 0 ]; do
+      case $1 in
+        --name)
+          group_name=$2
+          shift 2
+          ;;
+        --services)
+          services=$2
+          shift 2
+          ;;
+        --members)
+          members=$2
+          shift 2
+          ;;
+        --org|--organisation)
+          org_override=$2
+          shift 2
+          ;;
+        --help|-h|help)
+          show_help
+          exit 0
+          ;;
+        *)
+          echo "Unknown option $1" >&2
+          show_help
+          exit 1
+          ;;
+      esac
+    done
+    if [ -z "$group_name" ]; then
+      echo "--name is required when creating a group." >&2
+      exit 1
+    fi
+    ensure_ou "$GROUPS_BASE" "$(ou_label "$LDAP_GROUPS_OU")"
+    create_or_update_group "$group_name" "$services" "$members" "${org_override:-$LDAP_ORGANISATION}"
     exit 0
     ;;
   import)

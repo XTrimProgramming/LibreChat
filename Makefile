@@ -1,6 +1,19 @@
-.PHONY: help setup install build up down restart logs clean rebuild ollama-models ollama-pull-qwen ollama-pull-llama ldap-up ldap-down ldap-test ldap-integration-test keycloak-up keycloak-down keycloak-test
+.PHONY: help setup install build up down restart logs clean rebuild ollama-models ollama-model-pull ollama-test-mistral seed-guardrails ldap-up ldap-down ldap-test ldap-integration-test keycloak-up keycloak-down keycloak-test
 
 ROOT_DIR := $(shell pwd)
+ENV_FILE := .env
+UID_FROM_ENV := $(shell if [ -f $(ENV_FILE) ]; then awk -F= '/^UID=/ {print $$2; exit}' $(ENV_FILE); fi)
+GID_FROM_ENV := $(shell if [ -f $(ENV_FILE) ]; then awk -F= '/^GID=/ {print $$2; exit}' $(ENV_FILE); fi)
+UID_TARGET := $(if $(UID_FROM_ENV),$(UID_FROM_ENV),$(shell id -u))
+GID_TARGET := $(if $(GID_FROM_ENV),$(GID_FROM_ENV),$(shell id -g))
+# Extra goals passed to ollama-model-pull (like `make ollama-model-pull qwen:latest`) should not be treated as unmet targets
+HOST_DATA_DIRS := meili_data_v1.12 container config data images logs uploads keycloak data-node
+OLLAMA_EXTRA_GOALS := $(filter-out ollama-model-pull,$(MAKECMDGOALS))
+ifeq ($(filter ollama-model-pull,$(MAKECMDGOALS)),ollama-model-pull)
+.PHONY += $(OLLAMA_EXTRA_GOALS)
+$(OLLAMA_EXTRA_GOALS):
+	@:
+endif
 
 # Default target
 help:
@@ -20,10 +33,10 @@ help:
 	@echo "  make rebuild        - Rebuild, restart services, and pull Ollama models"
 	@echo ""
 	@echo "Ollama Commands:"
-	@echo "  make ollama-models  - Pull all Ollama models (qwen, llama3.2)"
-	@echo "  make ollama-pull-qwen   - Pull Qwen model"
-	@echo "  make ollama-pull-llama  - Pull Llama 3.2 model"
-	@echo "  make ollama-list    - List installed Ollama models"
+	@echo "  make ollama-models       - Pull Mistral model"
+	@echo "  make ollama-model-pull   - Pull any Ollama model (set MODEL=foo)"
+	@echo "  make ollama-test-mistral - Test the Mistral model"
+	@echo "  make ollama-list         - List installed Ollama models"
 	@echo ""
 	@echo "Utility Commands:"
 	@echo "  make logs           - View container logs (all services)"
@@ -148,9 +161,19 @@ install:
 	cd api && npm install
 	cd client && npm install
 
+	@echo "Building workspace packages for container runtime..."
+	npm run build:packages
+
 # Build Docker containers
 build:
 	@echo "Building Docker containers..."
+	@echo "Ensuring host directories exist: $(HOST_DATA_DIRS)"
+	@mkdir -p $(HOST_DATA_DIRS)
+	@if [ "$$(id -u)" -eq 0 ]; then \
+		chown $(UID_TARGET):$(GID_TARGET) $(HOST_DATA_DIRS); \
+	else \
+		echo "Skipping chown for host directories (not running as root)"; \
+	fi
 	docker compose build
 
 # Align host volume ownership with the UID/GID declared in .env.
@@ -169,6 +192,7 @@ up:
 	@echo "🤖 Pulling Ollama models (this may take a few minutes)..."
 	@sleep 5
 	@$(MAKE) ollama-models || echo "⚠️  Warning: Ollama models pull failed. You can manually pull them with 'make ollama-models'"
+	@$(MAKE) seed-guardrails || echo "⚠️  Guardrail seeding failed; rerun './scripts/manage-ldap-org.sh apply-template --file scripts/templates/org-template.json'"
 	@echo ""
 	@echo "🌐 Access LibreChat at: http://localhost:3080"
 	@echo "📊 Access MCP ClickHouse at: http://localhost:8001"
@@ -206,72 +230,53 @@ rebuild:
 	@echo "🤖 Pulling Ollama models (this may take a few minutes)..."
 	@sleep 5
 	@$(MAKE) ollama-models || echo "⚠️  Warning: Ollama models pull failed. You can manually pull them with 'make ollama-models'"
+	@$(MAKE) seed-guardrails || echo "⚠️  Guardrail seeding failed; rerun './scripts/manage-ldap-org.sh apply-template --file scripts/templates/org-template.json'"
 	@echo ""
 	@echo "🌐 Access LibreChat at: http://localhost:3080"
 	@echo "📊 Access MCP ClickHouse at: http://localhost:8001"
 
 # Pull all Ollama models
 ollama-models:
-	@echo "📦 Checking Ollama models..."
-	@echo ""
-	@echo "Waiting for Ollama service to be ready..."
+	@echo "📦 Ensuring Ollama is ready..."
 	@timeout=60; while ! docker compose exec ollama ollama list >/dev/null 2>&1 && [ $$timeout -gt 0 ]; do \
 		echo "Waiting for Ollama... ($$timeout seconds remaining)"; \
 		sleep 2; \
 		timeout=$$((timeout-2)); \
-	done
+		done
 	@if ! docker compose exec ollama ollama list >/dev/null 2>&1; then \
 		echo "❌ Error: Ollama service is not ready"; \
 		exit 1; \
 	fi
-	@echo ""
-	@echo "1/2 Checking Qwen model..."
-	@if docker compose exec ollama ollama list | grep -q "qwen"; then \
-		echo "✅ Qwen model already exists (skipping download)"; \
-	else \
-		echo "📥 Pulling Qwen model (this may take several minutes)..."; \
-		docker compose exec ollama ollama pull qwen:latest && echo "✅ Qwen model pulled successfully" || echo "❌ Failed to pull Qwen model"; \
-	fi
-	@echo ""
-	@echo "2/2 Checking Llama 3.2 model..."
-	@if docker compose exec ollama ollama list | grep -q "llama3.2"; then \
-		echo "✅ Llama 3.2 model already exists (skipping download)"; \
-	else \
-		echo "📥 Pulling Llama 3.2 model (this may take several minutes)..."; \
-		docker compose exec ollama ollama pull llama3.2:latest && echo "✅ Llama 3.2 model pulled successfully" || echo "❌ Failed to pull Llama 3.2 model"; \
-	fi
-	@echo ""
+	@$(MAKE) ollama-model-pull MODEL=mistral:latest
 	@echo "✅ Ollama models ready!"
 	@echo ""
 	@echo "📋 Installed models:"
 	@docker compose exec ollama ollama list
 	@echo ""
 	@echo "Test models with:"
-	@echo "  make ollama-test-qwen"
-	@echo "  make ollama-test-llama"
+	@echo "  make ollama-test-mistral"
 
-# Pull individual models
-ollama-pull-qwen:
-	@echo "Checking Qwen model..."
-	@if docker compose exec ollama ollama list | grep -q "qwen"; then \
-		echo "✅ Qwen model already exists"; \
-		echo "💡 To update, run: docker compose exec ollama ollama pull qwen:latest"; \
-	else \
-		echo "📥 Pulling Qwen model..."; \
-		docker compose exec ollama ollama pull qwen:latest; \
-		echo "✅ Qwen model ready"; \
-	fi
+ollama-model-pull:
+	@MODEL_ARG=$$(if [ -n "$(MODEL)" ]; then echo "$(MODEL)"; else echo "$$(firstword $(OLLAMA_EXTRA_GOALS))"; fi); \
+	if [ -z "$$MODEL_ARG" ]; then \
+		echo "MODEL must be provided (e.g., make ollama-model-pull MODEL=mistral:latest or make ollama-model-pull mistral:latest)"; \
+		exit 1; \
+	fi; \
+	@echo "Pulling Ollama model $$MODEL_ARG..."
+	@docker compose exec ollama ollama pull $$MODEL_ARG
 
-ollama-pull-llama:
-	@echo "Checking Llama 3.2 model..."
-	@if docker compose exec ollama ollama list | grep -q "llama3.2"; then \
-		echo "✅ Llama 3.2 model already exists"; \
-		echo "💡 To update, run: docker compose exec ollama ollama pull llama3.2:latest"; \
-	else \
-		echo "📥 Pulling Llama 3.2 model..."; \
-		docker compose exec ollama ollama pull llama3.2:latest; \
-		echo "✅ Llama 3.2 model ready"; \
-	fi
+seed-guardrails:
+	@echo "🧱 Applying guardrail org template..."
+	@attempts=0; \
+	until bash scripts/manage-ldap-org.sh apply-template --file scripts/templates/org-template.json; do \
+		attempts=$$((attempts+1)); \
+		if [ $$attempts -ge 6 ]; then \
+			echo "❌ Failed to seed guardrail template after $$attempts attempts" >&2; \
+			exit 1; \
+		fi; \
+		echo "Waiting for LDAP to be ready before seeding guardrails... (retry $$attempts)"; \
+		sleep 2; \
+	done
 
 # List Ollama models
 ollama-list:
@@ -279,13 +284,9 @@ ollama-list:
 	@docker compose exec ollama ollama list
 
 # Test Ollama models
-ollama-test-qwen:
-	@echo "Testing Qwen model..."
-	@docker compose exec ollama ollama run qwen:latest "Hello, introduce yourself briefly"
-
-ollama-test-llama:
-	@echo "Testing Llama 3.2 model..."
-	@docker compose exec ollama ollama run llama3.2:latest "Hello, introduce yourself briefly"
+ollama-test-mistral:
+	@echo "Testing Mistral model..."
+	@docker compose exec ollama ollama run mistral:latest "Hello, introduce yourself briefly"
 
 # View all logs
 logs:
