@@ -139,14 +139,18 @@ setup:
 	@echo "✅ Setup complete!"
 	@$(MAKE) ensure-volumes
 	@echo ""
+	@echo "Installing dependencies and building containers..."
+	@$(MAKE) install
+	@$(MAKE) build
+	@echo ""
 	@echo "📝 Next steps:"
 	@echo "1. Add your API keys to .env:"
 	@echo "   - OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_KEY"
 	@echo "   - GROQ_API_KEY, MISTRAL_API_KEY, OPENROUTER_KEY"
 	@echo "   - HELICONE_KEY, PORTKEY_API_KEY, PORTKEY_OPENAI_VIRTUAL_KEY"
 	@echo ""
-	@echo "2. Build and start services:"
-	@echo "   make build && make up"
+	@echo "2. Start services:"
+	@echo "   make up"
 	@echo ""
 	@echo "Or use: make rebuild"
 
@@ -174,6 +178,8 @@ build:
 	else \
 		echo "Skipping chown for host directories (not running as root)"; \
 	fi
+	@echo "Pulling required Docker images..."
+	docker compose pull
 	docker compose build
 
 # Align host volume ownership with the UID/GID declared in .env.
@@ -262,8 +268,8 @@ ollama-model-pull:
 		echo "MODEL must be provided (e.g., make ollama-model-pull MODEL=mistral:latest or make ollama-model-pull mistral:latest)"; \
 		exit 1; \
 	fi; \
-	@echo "Pulling Ollama model $$MODEL_ARG..."
-	@docker compose exec ollama ollama pull $$MODEL_ARG
+	echo "Pulling Ollama model $$MODEL_ARG..."; \
+	docker compose exec ollama ollama pull $$MODEL_ARG
 
 seed-guardrails:
 	@echo "🧱 Applying guardrail org template..."
