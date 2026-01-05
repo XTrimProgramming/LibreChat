@@ -173,6 +173,7 @@ build:
 	@echo "Building Docker containers..."
 	@echo "Ensuring host directories exist: $(HOST_DATA_DIRS)"
 	@mkdir -p $(HOST_DATA_DIRS)
+	@chmod 777 keycloak data-node
 	@if [ "$$(id -u)" -eq 0 ]; then \
 		chown $(UID_TARGET):$(GID_TARGET) $(HOST_DATA_DIRS); \
 	else \
