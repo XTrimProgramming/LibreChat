@@ -30,6 +30,7 @@ const { addAgentResourceFile, removeAgentResourceFiles } = require('~/models/Age
 const { getOpenAIClient } = require('~/server/controllers/assistants/helpers');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { createFile, updateFileUsage, deleteFiles } = require('~/models');
+const { File } = require('~/db/models');
 const { getFileStrategy } = require('~/server/utils/getFileStrategy');
 const { checkCapability } = require('~/server/services/Config');
 const { LB_QueueAsyncCall } = require('~/server/utils/queue');
@@ -37,6 +38,13 @@ const { getStrategyFunctions } = require('./strategies');
 const { determineFileType } = require('~/server/utils');
 const { chunkText } = require('~/server/utils/textChunks');
 const { STTService } = require('./Audio/STTService');
+const { createHash } = require('crypto');
+const { unlink } = require('node:fs/promises');
+const {
+  ensureTable,
+  findFileByHash,
+  upsertFile,
+} = require('./postgresFileStore');
 
 /**
  * Creates a modular file upload wrapper that ensures filename sanitization
@@ -221,6 +229,18 @@ const processDeleteRequest = async ({ req, files }) => {
   await Promise.allSettled(promises);
   await deleteFiles(resolvedFileIds);
 };
+
+const computeFileHash = (filePath) =>
+  new Promise((resolve, reject) => {
+    if (!filePath) {
+      return resolve(null);
+    }
+    const hash = createHash('sha256');
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.on('data', (chunk) => hash.update(chunk));
+    fileStream.on('error', reject);
+    fileStream.on('end', () => resolve(hash.digest('hex')));
+  });
 
 /**
  * Processes a file URL using a specified file handling strategy. This function accepts a strategy name,
@@ -488,10 +508,46 @@ const processAgentFileUpload = async ({ req, res, metadata }) => {
   }
 
   const isImage = file.mimetype.startsWith('image');
-  let fileInfoMetadata;
   const entity_id = messageAttachment === true ? undefined : agent_id;
   const basePath = mime.getType(file.originalname)?.startsWith('image') ? 'images' : 'uploads';
   const fileConfig = mergeFileConfig(appConfig.fileConfig);
+  let fileInfoMetadata = {};
+
+  const fileHash = await computeFileHash(file.path).catch((error) => {
+    logger.error('[processAgentFileUpload] Error computing file hash', error);
+    return null;
+  });
+
+  await ensureTable();
+  const duplicateEntry = fileHash ? await findFileByHash(fileHash) : null;
+  if (duplicateEntry) {
+    const canonicalFileId = duplicateEntry.file_id;
+    const existingFileDoc = await File.findOne({ file_id: canonicalFileId }).lean();
+    if (existingFileDoc) {
+      try {
+        await unlink(file.path);
+      } catch (err) {
+        logger.error('[processAgentFileUpload] Error removing duplicate upload', err);
+      }
+      if (!messageAttachment && tool_resource) {
+        await addAgentResourceFile({
+          req,
+          file_id: canonicalFileId,
+          agent_id,
+          tool_resource,
+        });
+      }
+      await upsertFile(existingFileDoc);
+      return res.status(200).json({
+        message: 'File already uploaded; reusing the previous entry',
+        ...existingFileDoc,
+      });
+    }
+    logger.warn(
+      `[processAgentFileUpload] Postgres hash entry found but Mongo file missing: ${canonicalFileId}`,
+      { fileHash, file_id: canonicalFileId },
+    );
+  }
 
   let parsedText;
   let parsedTextChunks;
@@ -749,6 +805,11 @@ const processAgentFileUpload = async ({ req, res, metadata }) => {
     filepath = result.filepath;
   }
 
+  const metadataWithHash = removeNullishValues({
+    ...fileInfoMetadata,
+    fileHash,
+  });
+
   const fileInfo = removeNullishValues({
     user: req.user.id,
     file_id,
@@ -758,7 +819,7 @@ const processAgentFileUpload = async ({ req, res, metadata }) => {
     filename: filename ?? sanitizeFilename(file.originalname),
     context: messageAttachment ? FileContext.message_attachment : FileContext.agents,
     model: messageAttachment ? undefined : req.body.model,
-    metadata: fileInfoMetadata,
+    metadata: metadataWithHash,
     text: parsedText,
     type: file.mimetype,
     embedded,
@@ -768,6 +829,7 @@ const processAgentFileUpload = async ({ req, res, metadata }) => {
   });
 
   const result = await createFile(fileInfo, true);
+  await upsertFile(result);
 
   res.status(200).json({ message: 'Agent file uploaded and processed successfully', ...result });
 };

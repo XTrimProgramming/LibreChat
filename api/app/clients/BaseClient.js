@@ -1063,6 +1063,13 @@ class BaseClient {
       }
     }
 
+    if (saveOptions?.files?.length) {
+      const existingFiles = existingConvo?.files ?? [];
+      fieldsToKeep.files = Array.from(
+        new Set([...existingFiles, ...saveOptions.files].filter(Boolean)),
+      );
+    }
+
     const conversation = await saveConvo(this.options?.req, fieldsToKeep, {
       context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveConvo',
       unsetFields,

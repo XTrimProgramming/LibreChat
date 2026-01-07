@@ -84,5 +84,68 @@ services:
     env_file:
       - .env
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-db
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=librechat
+    restart: always
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+
+  mcp-clickhouse:
+    image: mcp/clickhouse:latest
+    container_name: mcp-clickhouse
+    ports:
+      - "8001:8000"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=librechat
+      - CLICKHOUSE_MCP_SERVER_TRANSPORT=sse
+      - CLICKHOUSE_MCP_BIND_HOST=0.0.0.0
+    depends_on:
+      - clickhouse
+    restart: always
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: librechat-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=librechat
+      - POSTGRES_DB=librechat
+      - POSTGRES_INITDB_ARGS=--auth-host=md5 --auth-local=md5
+    command: ["postgres", "-c", "password_encryption=md5"]
+    restart: always
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  mcp-postgres:
+    image: mcp/postgres:latest
+    container_name: mcp-postgres
+    ports:
+      - "8002:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:librechat@postgres:5432/librechat
+    depends_on:
+      - postgres
+    restart: always
+
 volumes:
   pgdata2:
+  clickhouse-data:
+  clickhouse-logs:
+  postgres-data:

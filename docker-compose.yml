@@ -133,9 +133,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
+          cpus: "0-5"
           memory: 15G
-
+    environment:
+      OLLAMA_NUM_THREADS: "6"
+      OMP_NUM_THREADS: "6"
+      GGML_NUM_THREADS: "6"
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_CONTEXT_LENGTH: "8192"
 
 volumes:
   pgdata2:
