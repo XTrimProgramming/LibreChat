@@ -41,6 +41,7 @@ export class MCPManager extends UserConnectionManager {
   public async initialize(configs: t.MCPServers) {
     await MCPServersInitializer.initialize(configs);
     this.appConnections = new ConnectionsRepository(undefined);
+    await this.preconnectAppServers(configs);
   }
 
   /** Retrieves an app-level or user-specific connection based on provided arguments */
@@ -256,5 +257,26 @@ Please follow these instructions when using tools from the respective MCP server
       // Rethrowing allows the caller (createMCPTool) to handle the final user message
       throw error;
     }
+  }
+
+  private async preconnectAppServers(configs: t.MCPServers): Promise<void> {
+    if (!this.appConnections) {
+      return;
+    }
+
+    const serverNames = Object.keys(configs);
+    if (serverNames.length === 0) {
+      return;
+    }
+    logger.info(`[MCPManager] Preconnecting to ${serverNames.length} server(s)`);
+    await Promise.allSettled(
+      serverNames.map(async (serverName) => {
+        try {
+          await this.appConnections!.get(serverName);
+        } catch (error) {
+          logger.warn(`[MCPManager] Failed to preconnect to ${serverName}`, error);
+        }
+      }),
+    );
   }
 }

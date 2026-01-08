@@ -1,3 +1,60 @@
+# Sample MCP Data Scenarios
+The dev containers now seed both the PostgreSQL and ClickHouse MCP servers with starter datasets you can query via the `/api/mcp/servers` tools. This gives you real rows to test against while keeping everything idempotent and restart-safe.
+
+## PostgreSQL (server: `postgres`)
+### Schema
+- `students(id, name, grade_level, enrollment_date)` — 100 synthetic students, grades 1–12, enrollment spread over ~1 year.
+- `subjects(id, name, description)` — five fixed subjects (Math, English, Science, History, Computer Science).
+- `marks(id, student_id, subject_id, score, exam_date)` — three random scores per student (60–100) with recent exam dates.
+The seed script lives at `scripts/sql/seed-student-data.sql`, and Docker mounts it as an init script for the Postgres container. Rerunning the stack keeps the data, thanks to `ON CONFLICT` guards.
+
+### MCP Query Ideas
+1. **Simple**: `SELECT name, grade_level FROM students WHERE grade_level = 10;`
+2. **Aggregation**: `SELECT s.name, AVG(m.score) AS average_score FROM students s JOIN marks m ON s.id = m.student_id GROUP BY s.name ORDER BY average_score DESC LIMIT 5;`
+3. **Multi-table**: `SELECT st.name, sub.name AS subject, m.score FROM students st JOIN marks m ON st.id = m.student_id JOIN subjects sub ON sub.id = m.subject_id WHERE m.score < 70;`
+4. **Time-based**: `SELECT grade_level, COUNT(*) FROM students WHERE enrollment_date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY grade_level;`
+
+## ClickHouse (server: `mcp-clickhouse`)
+### Schema
+- `blog_pages(page_id, title, author, category, created_at)` — 100 blog pages demo, categories like News/Guides/Reviews.
+- `page_clicks(click_id, page_id, user_id, clicked_at, click_type)` — 100 click events with CTA/link/image/button types.
+- `page_views(view_id, page_id, user_id, view_duration, viewed_at)` — 100 view durations per page.
+- `successful_downloads(download_id, page_id, user_id, downloaded_at, file_size_kb)` — download metrics.
+- `user_journeys(journey_id, user_id, page_sequence, journey_start, journey_end)` — recording of 100 cross-page journeys.
+The SQL file `scripts/clickhouse/seed-blog-data.sql` is mounted to `/docker-entrypoint-initdb.d` so ClickHouse loads it when the container starts.
+
+### MCP Query Ideas
+1. **Simple**: `SELECT title, author FROM blog_pages WHERE category = 'Guides';`
+2. **Event counts**: `SELECT page_id, count() AS clicks FROM page_clicks GROUP BY page_id ORDER BY clicks DESC LIMIT 5;`
+3. **View duration distribution**: `SELECT page_id, avg(view_duration) FROM page_views GROUP BY page_id HAVING avg(view_duration) > 40;`
+4. **Journeys**: `SELECT user_id, arrayJoin(page_sequence) AS visited FROM user_journeys WHERE journey_start >= now() - INTERVAL 3 DAY;`
+
+## Cross-platform MCP Stories
+1. **Student-blog link**: use Postgres to find the top students by average score, then pair with ClickHouse to see whether they clicked on the most-read blog pages (e.g., `SELECT m.score FROM students...` followed by `SELECT page_id, count() FROM page_views...`).
+2. **Time-aligned insights**: get recent exam dates from Postgres and correlate with ClickHouse download spikes (same date ranges) to see if students download guides after assessments.
+3. **User journeys vs. subjects**: correlate `user_id` in ClickHouse `user_journeys` with Postgres `students` `id` to create stories such as “Student 23 with grade 10 visited page IDs X, Y, Z.”
+
+## CLI Verification Steps
+Use the following commands to query the seeded data directly from the respective containers before invoking MCP tools.
+
+1. **Postgres interactive checks** (service name `postgres`, container `librechat-postgres`):
+  - Connect: `docker compose exec -T postgres psql -U postgres -d librechat`
+  - List tables: `\dt`
+  - Sample query: `SELECT grade_level, COUNT(*) FROM students GROUP BY grade_level ORDER BY grade_level;`
+  - Cross join query: `SELECT s.name, sub.name AS subject, m.score FROM students s JOIN marks m ON s.id = m.student_id JOIN subjects sub ON sub.id = m.subject_id LIMIT 10;`
+
+2. **ClickHouse interactive checks** (service `clickhouse`, container `clickhouse-db`):
+  - Connect: `docker compose exec -T clickhouse clickhouse-client --user=default --password=librechat --database=default`
+  - List tables: `SHOW TABLES;`
+  - Sample query: `SELECT page_id, count() AS clicks FROM page_clicks GROUP BY page_id ORDER BY clicks DESC LIMIT 5;`
+  - Journey query: `SELECT user_id, arrayJoin(page_sequence) AS page_id FROM user_journeys WHERE journey_start >= now() - INTERVAL 3 DAY;`
+
+3. **Cross-database verification idea**:
+  - Extract a list of high-performing student IDs from Postgres (e.g., top 5 average scores) and use those IDs to filter ClickHouse journeys: fetch the student list via Postgres, then run `SELECT * FROM user_journeys WHERE user_id IN (?)` inside ClickHouse (replace `?` with the student IDs).
+
+Running these CLI commands confirms the tables/checks exist and gives you IDs or timestamps you can refer to when composing MCP tool queries (SQL prompts, analytic prompts, or natural-language cross-database workflows).
+
+Use natural-language MCP tooling (`/api/mcp/tools/list`, `.../call`) to run these queries directly through the agent UI. The seeded data gives you deterministic, cross-referenced datasets for both simple lookups and richer analytical prompts.
 <p align="center">
   <h1 align="center">
     Bintybyte AI Chat
@@ -96,6 +153,14 @@ The MCP ClickHouse server provides database query capabilities to AI models:
 ```bash
 make mcp-start    # Start MCP server
 make mcp-logs     # View MCP logs
+```
+
+### MCP Smoke Tests
+
+Validate that the configured MCP servers are reachable from LibreChat without leaving the host shell. Set `LIBRECHAT_TOKEN` (or `LIBRECHAT_JWT`) to an admin JWT, then run `npm run test:mcp-servers`. The helper requests `/api/mcp/servers` and `/api/mcp/connection/status/<server>` for every name listed in `LIBRECHAT_MCP_SERVERS` (defaults to `postgres,mcp-clickhouse`) and fails if any server is not `connected`.
+
+```bash
+LIBRECHAT_TOKEN=$(cat .token) npm run test:mcp-servers
 ```
 
 ### Access Your Instance

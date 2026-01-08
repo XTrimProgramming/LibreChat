@@ -27,6 +27,8 @@ services:
       - ./images:/app/client/public/images
       - ./uploads:/app/uploads
       - ./logs:/app/logs
+      - ./librechat.yaml:/app/librechat.yaml
+      - ./librechat.yaml:/librechat.yaml
   mongodb:
     container_name: chat-mongodb
     image: mongo
@@ -120,7 +122,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
+    container_name: librechat-ollama
     ports:
       - "11434:11434"
     volumes:
@@ -129,13 +131,83 @@ services:
       # - ./ollama/models.txt:/models.txt
     entrypoint: [ "/bin/sh", "-c" ]
     command: [ "ollama serve && wait" ]
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
-          cpus: "2.0"
+          cpus: "0-4"
           memory: 15G
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-db
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=librechat
+    restart: always
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+      - ./scripts/clickhouse:/docker-entrypoint-initdb.d:ro
+
+  mcp-clickhouse:
+    image: mcp/clickhouse:latest
+    container_name: mcp-clickhouse
+    ports:
+      - "8001:8000"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=librechat
+      - CLICKHOUSE_MCP_SERVER_TRANSPORT=sse
+      - CLICKHOUSE_MCP_BIND_HOST=0.0.0.0
+    depends_on:
+      - clickhouse
+    restart: always
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: librechat-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=librechat
+      - POSTGRES_DB=librechat
+    restart: always
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d librechat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mcp-postgres:
+    image: crystaldba/postgres-mcp:latest
+    container_name: mcp-postgres
+    ports:
+      - "127.0.0.1:8002:8000"
+    environment:
+      - DATABASE_URI=postgresql://postgres:librechat@postgres:5432/librechat
+    command: ["--access-mode=unrestricted", "--transport=sse"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
 
 
 volumes:
   pgdata2:
+  clickhouse-data:
+  clickhouse-logs:
+  postgres-data:
