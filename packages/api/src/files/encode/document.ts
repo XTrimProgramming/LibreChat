@@ -52,7 +52,15 @@ export async function encodeAndFormatDocuments(
   if (isAgentEndpoint) {
     console.error('[encodeAndFormatDocuments] RETURNING EMPTY for agent endpoint');
     // Return empty documents - text extraction happens separately via extractFileContext
-    return { documents: [], files: files.map(f => ({ file_id: f.file_id, filename: f.filename, type: f.type })) };
+    return {
+      documents: [],
+      files: files.map((f) => ({
+        file_id: f.file_id,
+        filename: f.filename,
+        type: f.type,
+        filepath: f.filepath,
+      })),
+    };
   }
 
   const encodingMethods: Record<string, StrategyFunctions> = {};

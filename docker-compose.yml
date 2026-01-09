@@ -29,6 +29,7 @@ services:
       - ./logs:/app/logs
       - ./librechat.yaml:/app/librechat.yaml
       - ./librechat.yaml:/librechat.yaml
+
   mongodb:
     container_name: chat-mongodb
     image: mongo
@@ -36,7 +37,7 @@ services:
     user: "${UID}:${GID}"
     volumes:
       - ./data-node:/data/db
-    command: mongod --noauth
+
   meilisearch:
     container_name: chat-meilisearch
     image: getmeili/meilisearch:v1.12.3
@@ -48,6 +49,7 @@ services:
       - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
     volumes:
       - ./meili_data_v1.12:/meili_data
+
   vectordb:
     container_name: vectordb
     image: pgvector/pgvector:0.8.0-pg15-trixie
@@ -58,6 +60,7 @@ services:
     restart: always
     volumes:
       - pgdata2:/var/lib/postgresql/data
+
   rag_api:
     container_name: rag_api
     image: ghcr.io/danny-avila/librechat-rag-api-dev-lite:latest
@@ -69,6 +72,8 @@ services:
       - vectordb
     env_file:
       - .env
+    ports:
+      - "${RAG_PORT:-8000}:8000"
 
   ldap:
     image: osixia/openldap:1.5.0
@@ -109,6 +114,7 @@ services:
     volumes:
       - ./keycloak/data:/opt/keycloak/data
       - ./keycloak/realm:/opt/keycloak/data/import
+
   keycloak-db:
     image: postgres:15
     container_name: chat-keycloak-db
@@ -186,11 +192,6 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./scripts/sql:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d librechat"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   mcp-postgres:
     image: crystaldba/postgres-mcp:latest
@@ -198,13 +199,11 @@ services:
     ports:
       - "127.0.0.1:8002:8000"
     environment:
-      - DATABASE_URI=postgresql://postgres:librechat@postgres:5432/librechat
+      - DATABASE_URI=postgresql://postgres:librechat@postgres:5432/sample_students?application_name=mcp&options=-csearch_path=school,public
     command: ["--access-mode=unrestricted", "--transport=sse"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     restart: always
-
 
 volumes:
   pgdata2:
